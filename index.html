@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Budget Planner by Paycheck</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f5f5f5; margin: 0; padding: 20px; display: flex; justify-content: center; }
+    .container { width: 980px; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+    h1,h2,h3 { margin: 10px 0; }
+    .header { display: flex; justify-content: space-between; align-items: center; }
+    .main-content { display: flex; gap: 20px; margin-top: 20px; }
+    .left, .right { background: #fafafa; padding: 10px; border-radius: 6px; }
+    .left { flex: 2; }
+    .right { flex: 1; }
+    .paycheck { border: 1px solid #ddd; border-radius: 6px; background: #fff; padding: 15px; margin-bottom: 20px; }
+    .paycheck:nth-child(even) { background: #f0f8ff; }
+    .paycheck-header { display: flex; gap: 10px; margin-bottom: 10px; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+    th, td { border: 1px solid #ddd; padding: 6px 8px; }
+    input, select { padding: 4px; font-size: 14px; }
+    button { padding: 6px 12px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    button:hover { background: #0056b3; }
+    .summary { background: #eef; padding: 8px; border-radius: 4px; margin-top: 10px; }
+    .master-section { margin-bottom: 20px; }
+    #category-breakdown { margin-top: 20px; }
+    #category-list { list-style: none; padding: 0; }
+    #category-list li { margin: 4px 0; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Budget Planner</h1>
+      <label>Month: <input type="month" id="budget-month"></label>
+    </div>
+    <div class="main-content">
+      <div class="left">
+        <section class="master-section">
+          <h2>Paychecks</h2>
+          <button onclick="addPaycheck()">Add Paycheck</button>
+          <div id="paychecks-container"></div>
+        </section>
+        <section class="master-section">
+          <h2>Overall Summary</h2>
+          <p>Total Income: $<span id="overall-income">0.00</span></p>
+          <p>Total Bills: $<span id="overall-bills">0.00</span></p>
+          <p>Total Expenses: $<span id="overall-expenses">0.00</span></p>
+          <p><strong>Remaining: $<span id="overall-remaining">0.00</span></strong></p>
+        </section>
+        <section id="category-breakdown" class="master-section">
+          <h2>Category Breakdown</h2>
+          <canvas id="categoryChart" width="300" height="300"></canvas>
+          <ul id="category-list"></ul>
+        </section>
+      </div>
+      <div class="right">
+        <section class="master-section">
+          <h3>Master Bill List <button id="toggle-master-btn" onclick="toggleMasterBills()">Hide</button></h3>
+          <div id="master-bills-container">
+            <button onclick="addMasterBill()">Add Bill</button>
+            <table id="master-bills-table">
+              <thead><tr><th>Name</th><th>Category</th><th>Action</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+        <section class="master-section">
+          <h3>Master Expense Categories <button id="toggle-expense-btn" onclick="toggleExpenseCategories()">Hide</button></h3>
+          <div id="master-expense-container">
+            <button onclick="addExpenseCategory()">Add Category</button>
+            <table id="master-expense-table">
+              <thead><tr><th>Category</th><th>Action</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const STORAGE_KEY = 'budgetData';
+    let paycheckCount = 0, billCount = 0, expenseCatCount = 0, categoryChart;
+
+    function saveState() {
+      const data = {
+        month: document.getElementById('budget-month').value,
+        masterBills: Array.from(document.querySelectorAll('#master-bills-table tbody tr')).map(tr => ({
+          name: tr.querySelector('.bill-name').textContent,
+          category: tr.querySelector('.bill-cat').textContent
+        })),
+        expenseCats: Array.from(document.querySelectorAll('#master-expense-table tbody tr')).map(
+          tr => tr.querySelector('.exp-cat').textContent
+        ),
+        paychecks: Array.from(document.querySelectorAll('.paycheck')).map(pc => ({
+          date: pc.querySelector('.pay-date').value,
+          amount: pc.querySelector('.pay-amt').value,
+          bills: Array.from(pc.querySelectorAll('select.bill-select')).map(s => {
+            const row = s.closest('tr');
+            return {
+              id: s.value,
+              amount: row.querySelector('input[type="number"]').value,
+              dueDate: row.querySelector('input[type="date"]').value
+            };
+          }),
+          expenses: Array.from(pc.querySelectorAll('.expense-row')).map(r => ({
+            item:     r.querySelector('input[type="text"]').value,
+            category: r.querySelector('select.exp-cat-select').value,
+            amount:   r.querySelector('input.exp-amt').value,
+            date:     r.querySelector('input[type="date"]').value
+          }))
+        }))
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    }
+
+    function loadState() {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return false;
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch (e) {
+        localStorage.removeItem(STORAGE_KEY);
+        return false;
+      }
+
+      // Month
+      document.getElementById('budget-month').value = data.month || '';
+
+      // Master Bills
+      const mbBody = document.querySelector('#master-bills-table tbody');
+      mbBody.innerHTML = '';
+      billCount = 0;
+      data.masterBills.forEach(b => addMasterBill(b.name, b.category));
+
+      // Expense Categories
+      const meBody = document.querySelector('#master-expense-table tbody');
+      meBody.innerHTML = '';
+      expenseCatCount = 0;
+      data.expenseCats.forEach(c => addExpenseCategory(c));
+
+      // Paychecks
+      const container = document.getElementById('paychecks-container');
+      container.innerHTML = '';
+      paycheckCount = 0;
+
+      data.paychecks.forEach(pcData => {
+        addPaycheck();
+        const el = document.querySelectorAll('.paycheck')[paycheckCount - 1];
+
+        // Header
+        el.querySelector('.pay-date').value = pcData.date;
+        el.querySelector('.pay-amt').value  = pcData.amount;
+
+        // Bills
+        const billTbody = el.querySelector('table:nth-of-type(1) tbody');
+        billTbody.innerHTML = '';
+        pcData.bills.forEach(bill => {
+          updateOptions();
+          addBill(el.querySelector('button[onclick^="addBill"]'));
+          const row = billTbody.lastElementChild;
+          const s   = row.querySelector('select.bill-select');
+          s.value   = bill.id;
+          billChanged(s);
+          row.querySelector('input[type="number"]').value = bill.amount;
+          row.querySelector('input[type="date"]').value   = bill.dueDate;
+        });
+
+        // Expenses
+        const expTbody = el.querySelector('table:nth-of-type(2) tbody');
+        expTbody.innerHTML = '';
+        pcData.expenses.forEach(exp => {
+          updateOptions();
+          addExpense(el.querySelector('button[onclick^="addExpense"]'));
+          const row = expTbody.lastElementChild;
+          row.querySelector('input[type="text"]').value     = exp.item;
+          row.querySelector('select.exp-cat-select').value  = exp.category;
+          row.querySelector('input.exp-amt').value          = exp.amount;
+          row.querySelector('input[type="date"]').value      = exp.date;
+        });
+      });
+
+      updateAll();
+      return true;
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      if (!loadState()) {
+        addPaycheck();
+        addPaycheck();
+        saveState();
+      }
+      updateAll();
+      document.body.addEventListener('input', saveState);
+      document.body.addEventListener('change', saveState);
+      document.body.addEventListener('blur', saveState, true);
+    });
+
+    // ——— Your original helper functions below ———
+
+    function toggleMasterBills() {
+      const c = document.getElementById('master-bills-container');
+      const b = document.getElementById('toggle-master-btn');
+      c.style.display = c.style.display === 'none' ? 'block' : 'none';
+      b.textContent = c.style.display === 'none' ? 'Show' : 'Hide';
+    }
+
+    function toggleExpenseCategories() {
+      const c = document.getElementById('master-expense-container');
+      const b = document.getElementById('toggle-expense-btn');
+      c.style.display = c.style.display === 'none' ? 'block' : 'none';
+      b.textContent = c.style.display === 'none' ? 'Show' : 'Hide';
+    }
+
+    function addMasterBill(name = '', category = '') {
+      const tbody = document.querySelector('#master-bills-table tbody');
+      const id = billCount++;
+      const tr = document.createElement('tr'); tr.dataset.id = id;
+      const tdName = document.createElement('td'); tdName.className = 'bill-name'; tdName.textContent = name || 'New Bill';
+      tdName.addEventListener('dblclick', () => {
+        const t = prompt('Edit bill name:', tdName.textContent);
+        if (t) tdName.textContent = t;
+        updateOptions(); saveState(); updateChart();
+      });
+      const tdCat = document.createElement('td'); tdCat.className = 'bill-cat'; tdCat.textContent = category || 'Uncategorized';
+      tdCat.addEventListener('dblclick', () => {
+        const t = prompt('Edit category:', tdCat.textContent);
+        if (t) tdCat.textContent = t;
+        updateOptions(); saveState(); updateChart();
+      });
+      const tdAct = document.createElement('td'); tdAct.innerHTML = '<button onclick="removeMasterBill(this)">Remove</button>';
+      tr.append(tdName, tdCat, tdAct);
+      tbody.appendChild(tr);
+      updateOptions(); saveState(); updateChart();
+    }
+
+    function removeMasterBill(btn) { btn.closest('tr').remove(); updateOptions(); saveState(); updateChart(); }
+
+    function addExpenseCategory(name = '') {
+      const tbody = document.querySelector('#master-expense-table tbody');
+      const id = expenseCatCount++;
+      const tr = document.createElement('tr'); tr.dataset.id = id;
+      const td = document.createElement('td'); td.className = 'exp-cat'; td.textContent = name || 'New Category';
+      td.addEventListener('dblclick', () => {
+        const t = prompt('Edit expense category:', td.textContent);
+        if (t) td.textContent = t;
+        updateOptions(); saveState(); updateChart();
+      });
+      const td2 = document.createElement('td'); td2.innerHTML = '<button onclick="removeExpenseCategory(this)">Remove</button>';
+      tr.append(td, td2);
+      tbody.appendChild(tr);
+      updateOptions(); saveState();
+    }
+
+    function removeExpenseCategory(btn) { btn.closest('tr').remove(); updateOptions(); saveState(); }
+
+    function updateOptions() {
+      const bills = Array.from(document.querySelectorAll('#master-bills-table tbody tr')).map((tr, i) => ({
+        id: i, label: `${tr.querySelector('.bill-name').textContent} (${tr.querySelector('.bill-cat').textContent})`
+      }));
+      const expCats = Array.from(document.querySelectorAll('#master-expense-table tbody tr')).map(tr => tr.querySelector('.exp-cat').textContent);
+
+      document.querySelectorAll('select.bill-select').forEach(s => {
+        const prev = s.value;
+        s.innerHTML = '<option disabled>Select Bill</option>';
+        bills.forEach(b => {
+          const o = document.createElement('option');
+          o.value = b.id;
+          o.textContent = b.label;
+          s.append(o);
+        });
+        s.value = prev;
+      });
+
+      document.querySelectorAll('select.exp-cat-select').forEach(s => {
+        const prev = s.value;
+        s.innerHTML = '<option disabled>Select Category</option>';
+        expCats.forEach((c, i) => {
+          const o = document.createElement('option');
+          o.value = i;
+          o.textContent = c;
+          s.append(o);
+        });
+        s.value = prev;
+      });
+    }
+
+    function addPaycheck() {
+      const container = document.getElementById('paychecks-container');
+      const id = paycheckCount++;
+      const div = document.createElement('div'); div.className = 'paycheck'; div.dataset.id = id;
+      div.innerHTML = `
+        <div class="paycheck-header">
+          <label>Pay Date: <input class="pay-date" type="date"></label>
+          <label>Amount: $<input class="pay-amt" type="number" value="0" min="0"></label>
+          <button onclick="removePaycheck(this)">Remove Paycheck</button>
+        </div>
+        <h3>Bills</h3>
+        <button onclick="addBill(this)">Add Bill</button>
+        <table><thead><tr><th>Bill</th><th>Amount</th><th>Due Date</th><th>Action</th></tr></thead><tbody></tbody></table>
+        <h3>Regular Spending</h3>
+        <button onclick="addExpense(this)">Add Expense</button>
+        <table><thead><tr><th>Item</th><th>Category</th><th>Amount</th><th>Date</th><th>Action</th></tr></thead><tbody></tbody></table>
+        <div class="summary">
+          <h4>Paycheck Summary</h4>
+          <p>Income: $<span class="sum-income">0.00</span></p>
+          <p>Bills: $<span class="sum-bills">0.00</span></p>
+          <p>Expenses: $<span class="sum-expenses">0.00</span></p>
+          <p><strong>Remaining: $<span class="sum-remaining">0.00</span></strong></p>
+        </div>
+      `;
+      container.appendChild(div);
+      updateOptions(); saveState(); updateAll();
+    }
+
+    function removePaycheck(btn) { btn.closest('div.paycheck').remove(); saveState(); updateAll(); }
+
+    function addBill(btn) {
+      const pc = btn.closest('.paycheck');
+      const tb = pc.querySelector('table:nth-of-type(1) tbody');
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><select class="bill-select" onchange="billChanged(this)"><option disabled selected>Select Bill</option></select></td>
+        <td><input type="number" value="0" min="0" oninput="updateAll()"></td>
+        <td><input type="date" onchange="updateAll()"></td>
+        <td><button onclick="removeRow(this)">Remove</button></td>
+      `;
+      tb.appendChild(tr);
+      updateOptions(); saveState(); updateAll();
+    }
+
+    function billChanged(s) {
+      const prev = s.dataset.prev;
+      if (prev != null) unmarkMaster(prev);
+      const id = s.value;
+      if (id) markMaster(id);
+      s.dataset.prev = id;
+      saveState();
+      updateAll();
+    }
+
+    function markMaster(id) {
+      document.querySelector(`#master-bills-table tbody tr[data-id="${id}"] .bill-name`).classList.add('paid');
+    }
+    function unmarkMaster(id) {
+      document.querySelector(`#master-bills-table tbody tr[data-id="${id}"] .bill-name`).classList.remove('paid');
+    }
+
+    function addExpense(btn) {
+      const pc = btn.closest('.paycheck');
+      const tb = pc.querySelector('table:nth-of-type(2) tbody');
+      const tr = document.createElement('tr'); tr.className = 'expense-row';
+      tr.innerHTML = `
+        <td><input type="text" placeholder="Item" oninput="updateAll()"></td>
+        <td><select class="exp-cat-select" onchange="updateAll()"><option disabled selected>Select Category</option></select></td>
+        <td><input class="exp-amt" type="number" value="0" min="0" oninput="updateAll()"></td>
+        <td><input type="date" onchange="updateAll()"></td>
+        <td><button onclick="removeRow(this)">Remove</button></td>
+      `;
+      tb.appendChild(tr);
+      updateOptions(); saveState(); updateAll();
+    }
+
+    function removeRow(btn) { btn.closest('tr').remove(); saveState(); updateAll(); }
+
+    function updateAll() {
+      let iT = 0, bT = 0, eT = 0;
+      document.querySelectorAll('.paycheck').forEach(pc => {
+        const inc = parseFloat(pc.querySelector('.pay-amt').value) || 0;
+        iT += inc;
+        let bs = 0, es = 0;
+        pc.querySelectorAll('select.bill-select').forEach(s => {
+          bs += parseFloat(s.closest('tr').querySelector('input[type="number"]').value) || 0;
+        });
+        pc.querySelectorAll('.expense-row').forEach(r => {
+          es += parseFloat(r.querySelector('input.exp-amt').value) || 0;
+        });
+        bT += bs; eT += es;
+        pc.querySelector('.sum-income').textContent    = inc.toFixed(2);
+        pc.querySelector('.sum-bills').textContent     = bs.toFixed(2);
+        pc.querySelector('.sum-expenses').textContent  = es.toFixed(2);
+        pc.querySelector('.sum-remaining').textContent = (inc - bs - es).toFixed(2);
+      });
+      document.getElementById('overall-income').textContent    = iT.toFixed(2);
+      document.getElementById('overall-bills').textContent     = bT.toFixed(2);
+      document.getElementById('overall-expenses').textContent  = eT.toFixed(2);
+      document.getElementById('overall-remaining').textContent = (iT - bT - eT).toFixed(2);
+      updateChart();
+      saveState();
+    }
+
+    function updateChart() {
+      const cats = {}, labels = [], data = [];
+      document.querySelectorAll('#master-expense-table tbody tr .exp-cat').forEach(el => cats[el.textContent] = 0);
+      document.querySelectorAll('#master-bills-table tbody tr .bill-cat').forEach(el => {
+        cats[el.textContent] = cats[el.textContent] || 0;
+      });
+      document.querySelectorAll('.paycheck').forEach(pc => {
+        pc.querySelectorAll('select.bill-select').forEach(s => {
+          const id = parseInt(s.value);
+          if (!isNaN(id)) {
+            const amt = parseFloat(s.closest('tr').querySelector('input[type="number"]').value) || 0;
+            const cat = document.querySelectorAll('#master-bills-table tbody tr')[id].querySelector('.bill-cat').textContent;
+            cats[cat] += amt;
+          }
+        });
+        pc.querySelectorAll('.expense-row').forEach(r => {
+          const cid = parseInt(r.querySelector('select.exp-cat-select').value);
+          if (!isNaN(cid)) {
+            const amt = parseFloat(r.querySelector('input.exp-amt').value) || 0;
+            const cat = document.querySelectorAll('#master-expense-table tbody tr')[cid].querySelector('.exp-cat').textContent;
+            cats[cat] += amt;
+          }
+        });
+      });
+      for (const k in cats) {
+        labels.push(k);
+        data.push(cats[k]);
+      }
+      const listEl = document.getElementById('category-list');
+      listEl.innerHTML = '';
+      const total = data.reduce((a, b) => a + b, 0);
+      labels.forEach((l, i) => {
+        const amt = data[i].toFixed(2),
+              pct = total ? ((data[i]/total)*100).toFixed(1) : 0;
+        const li = document.createElement('li');
+        li.textContent = `${l}: $${amt} (${pct}%)`;
+        listEl.appendChild(li);
+      });
+      const ctx = document.getElementById('categoryChart').getContext('2d');
+      if (categoryChart) categoryChart.destroy();
+      categoryChart = new Chart(ctx, {
+        type: 'pie',
+        data: { labels, datasets: [{ data }] },
+        options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+      });
+    }
+  </script>
+</body>
+</html>
